@@ -48,16 +48,17 @@ export function haversineish(a, b) {
   return Math.hypot(dx, dy);
 }
 
-// Shortest distance in metres from a point to a polyline, and where along it.
+// Shortest distance in metres from a point to a polyline, which segment it
+// falls on, and the closest point itself (for drawing the gap).
 export function distanceToPath(point, pts) {
-  if (!pts || pts.length === 0) return { meters: Infinity, index: -1 };
+  if (!pts || pts.length === 0) return { meters: Infinity, index: -1, point: null };
   const kx = metersPerDegLon(point[0]);
   const px = point[1] * kx, py = point[0] * M_PER_DEG_LAT;
-  let best = Infinity, bestIdx = 0;
   if (pts.length === 1) {
     const d = Math.hypot(pts[0][1] * kx - px, pts[0][0] * M_PER_DEG_LAT - py);
-    return { meters: d, index: 0 };
+    return { meters: d, index: 0, point: pts[0] };
   }
+  let best = Infinity, bestIdx = 0, bestT = 0;
   for (let i = 0; i < pts.length - 1; i++) {
     const ax = pts[i][1] * kx, ay = pts[i][0] * M_PER_DEG_LAT;
     const bx = pts[i + 1][1] * kx, by = pts[i + 1][0] * M_PER_DEG_LAT;
@@ -66,9 +67,14 @@ export function distanceToPath(point, pts) {
     let t = len2 > 0 ? ((px - ax) * vx + (py - ay) * vy) / len2 : 0;
     if (t < 0) t = 0; else if (t > 1) t = 1;
     const d = Math.hypot(px - (ax + t * vx), py - (ay + t * vy));
-    if (d < best) { best = d; bestIdx = i; }
+    if (d < best) { best = d; bestIdx = i; bestT = t; }
   }
-  return { meters: best, index: bestIdx };
+  const a = pts[bestIdx], b = pts[bestIdx + 1];
+  return {
+    meters: best,
+    index: bestIdx,
+    point: [a[0] + (b[0] - a[0]) * bestT, a[1] + (b[1] - a[1]) * bestT],
+  };
 }
 
 // Indices of points equal to the one before them.

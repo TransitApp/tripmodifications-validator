@@ -227,3 +227,60 @@ td.far { color: var(--error); font-weight: 600; }
 .key.dot-inserted { background: #d8b9ff; border: 2px solid #8250df; }
 
 footer { margin: 40px 0 30px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+/* Findings mini-maps */
+
+.settings-grid label.check { display: flex; align-items: center; gap: 6px; grid-column: 1 / -1; }
+
+.group ol.with-maps { padding-left: 14px; list-style: none; }
+.group li.has-map { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--border); }
+.group ol.with-maps > li.has-map:first-child { border-top: none; }
+.mm-text { flex: 1; min-width: 0; padding-top: 2px; }
+
+.mm-slot {
+  flex: 0 0 190px;
+  min-height: 118px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel);
+  position: relative;
+}
+.mm-slot.mm-none {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: var(--muted);
+}
+.minimap { display: block; }
+
+.mm-bg { fill: var(--panel); }
+.mm-orig { fill: none; stroke: #9aa4b2; stroke-width: 4; stroke-opacity: 0.75; stroke-linejoin: round; stroke-linecap: round; }
+.mm-new { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+
+.mm-stop { stroke-width: 1; }
+.mm-kept { fill: var(--accent); stroke: var(--accent); }
+.mm-removed { fill: var(--bg); stroke: var(--error); }
+.mm-inserted { fill: #d8b9ff; stroke: #8250df; }
+
+.mm-gap { stroke: var(--error); stroke-width: 1.5; stroke-dasharray: 3 2; }
+.mm-focus { stroke-width: 2.5; fill: var(--bg); }
+.mm-focus-kept { stroke: var(--accent); fill: var(--accent); }
+.mm-focus-removed { stroke: var(--error); fill: var(--bg); }
+.mm-focus-inserted { stroke: #8250df; fill: #d8b9ff; }
+.mm-focus-stop, .mm-focus-point { stroke: var(--error); }
+
+.mm-label { font: 600 10px var(--mono); fill: var(--error); paint-order: stroke; stroke: var(--bg); stroke-width: 3; }
+.mm-scale { stroke: var(--muted); stroke-width: 1.5; }
+.mm-scale-label { font: 9px var(--mono); fill: var(--muted); }
+
+.mm-open {
+  position: absolute; right: 4px; bottom: 4px;
+  font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  background: var(--bg); opacity: 0.8;
+}
+.mm-open:hover { opacity: 1; }
+
+@media (max-width: 620px) {
+  .group li.has-map { flex-direction: column; }
+  .mm-slot { flex: none; width: 100%; }
+  .minimap { width: 100%; height: auto; }
+}

@@ -96,8 +96,17 @@ Distances are planar with a `cos(lat)` correction on longitude, and every thresh
 
 A summary bar, a findings table you can filter by severity and search by entity, trip or stop id, and an
 entity inspector showing each selected trip stop by stop — kept, removed or inserted, with each stop's
-distance to the new shape. The optional Leaflet map draws the scheduled shape in grey, the new shape in
-blue, and the stops as filled, hollow and highlighted dots. Findings export as JSON and as Markdown.
+distance to the new shape. Findings export as JSON and as Markdown.
+
+Every geographic finding carries a **mini-map** next to it: the scheduled shape in grey, the new shape in
+blue, the trip's other stops as small dots, and the stop the finding is about marked with a dashed line to
+the nearest point on the new shape and the distance in metres. It answers "is this real?" without leaving
+the list. The pictures are plain inline SVG with no tiles and no network, drawn only once a row scrolls
+into view, so a group holding hundreds of findings stays responsive; turn them off in Settings if you
+prefer a dense list. **Open in map** on any of them jumps to the full Leaflet map, zoomed to that stop.
+
+The Leaflet map draws the same thing over OpenStreetMap tiles: scheduled shape in grey, new shape in blue,
+retained stops as filled dots, removed as hollow, inserted highlighted.
 
 ## Performance
 

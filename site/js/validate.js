@@ -529,7 +529,7 @@ function checkGeometry(model, f, s, gtfs) {
         const d = haversineish(firstLL, pts[0]);
         if (d > s.shapeEndpointM) {
           f.error('E_SHAPE_START_FAR',
-            `Shape "${plan.shapeId}" starts ${Math.round(d)} m from the first stop of trip "${plan.tripId}"${alsoOn} ("${plan.stops.stopIds[0]}"). A new shape must cover the whole trip, not just the detour.`,
+            `Entity "${ent.id}": shape "${plan.shapeId}" starts ${Math.round(d)} m from the first stop of trip "${plan.tripId}"${alsoOn} ("${plan.stops.stopIds[0]}"). A new shape must cover the whole trip, not just the detour.`,
             { entity: ent.id, trip: plan.tripId, shape: plan.shapeId, meters: Math.round(d), stop: plan.stops.stopIds[0] });
         }
       }
@@ -537,7 +537,7 @@ function checkGeometry(model, f, s, gtfs) {
         const d = haversineish(lastLL, pts[pts.length - 1]);
         if (d > s.shapeEndpointM) {
           f.error('E_SHAPE_END_FAR',
-            `Shape "${plan.shapeId}" ends ${Math.round(d)} m from the last stop of trip "${plan.tripId}"${alsoOn} ("${plan.stops.stopIds[last]}"). A new shape must cover the whole trip, not just the detour.`,
+            `Entity "${ent.id}": shape "${plan.shapeId}" ends ${Math.round(d)} m from the last stop of trip "${plan.tripId}"${alsoOn} ("${plan.stops.stopIds[last]}"). A new shape must cover the whole trip, not just the detour.`,
             { entity: ent.id, trip: plan.tripId, shape: plan.shapeId, meters: Math.round(d), stop: plan.stops.stopIds[last] });
         }
       }
@@ -549,11 +549,11 @@ function checkGeometry(model, f, s, gtfs) {
         row.distanceM = Math.round(d);
         if (row.kind === 'kept' && d > s.retainedStopM) {
           f.error('E_RETAINED_STOP_OFF_SHAPE',
-            `Trip "${plan.tripId}"${alsoOn} still serves stop "${row.stopId}", but it is ${Math.round(d)} m from shape "${plan.shapeId}". The trip claims a stop the new path never reaches.`,
+            `Entity "${ent.id}": trip "${plan.tripId}"${alsoOn} still serves stop "${row.stopId}", but it is ${Math.round(d)} m from shape "${plan.shapeId}". The trip claims a stop the new path never reaches.`,
             { entity: ent.id, trip: plan.tripId, stop: row.stopId, shape: plan.shapeId, meters: Math.round(d) });
         } else if (row.kind === 'removed' && d < s.removedStopM) {
           f.info('I_REMOVED_STOP_NEAR_SHAPE',
-            `Trip "${plan.tripId}"${alsoOn} removes stop "${row.stopId}", which is still only ${Math.round(d)} m from shape "${plan.shapeId}". That is what a stop closure looks like, and also what a detour applied to the wrong range looks like.`,
+            `Entity "${ent.id}": trip "${plan.tripId}"${alsoOn} removes stop "${row.stopId}", which is still only ${Math.round(d)} m from shape "${plan.shapeId}". That is what a stop closure looks like, and also what a detour applied to the wrong range looks like.`,
             { entity: ent.id, trip: plan.tripId, stop: row.stopId, shape: plan.shapeId, meters: Math.round(d) });
         }
       }

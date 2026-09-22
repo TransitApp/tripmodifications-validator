@@ -5,8 +5,10 @@ import { validate, DEFAULT_SETTINGS } from './validate.js';
 import { CODE_TITLES } from './findings.js';
 import { toJson, toMarkdown, download } from './report.js';
 import { PlanMap } from './map.js';
+import { findingGeo, miniMapSvg, MAPPABLE_CODES } from './minimap.js';
 
 const SETTINGS_KEY = 'tmv.settings';
+const MINIMAPS_KEY = 'tmv.miniMaps';
 
 const SLOTS = ['static', 'mods', 'tripupdates', 'alerts'];
 const state = {
@@ -15,7 +17,14 @@ const state = {
   result: null,
   gtfs: null,
   planMap: null,
+  miniMaps: readMiniMapPref(),
+  rendered: [],          // the finding behind each lazily drawn mini-map
+  mapObserver: null,
 };
+
+function readMiniMapPref() {
+  try { return localStorage.getItem(MINIMAPS_KEY) !== 'off'; } catch (e) { return true; }
+}
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -47,6 +56,14 @@ function bindSettings() {
   const proxy = $('#set-proxy');
   proxy.value = getProxy();
   proxy.addEventListener('change', () => setProxy(proxy.value.trim()));
+
+  const maps = $('#set-minimaps');
+  maps.checked = state.miniMaps;
+  maps.addEventListener('change', () => {
+    state.miniMaps = maps.checked;
+    try { localStorage.setItem(MINIMAPS_KEY, maps.checked ? 'on' : 'off'); } catch (e) { /* ignore */ }
+    if (state.result) renderFindings();
+  });
 }
 
 // --- inputs ----------------------------------------------------------------
@@ -267,22 +284,78 @@ function renderFindings() {
     return;
   }
 
+  state.rendered = [];
   el.innerHTML = shown.map((g) => {
     const items = q
       ? g.items.filter((i) => i.message.toLowerCase().includes(q) || Object.values(i.context).some((v) => String(v).toLowerCase().includes(q)))
       : g.items;
-    const list = (items.length ? items : g.items).slice(0, 300);
-    const extra = (items.length ? items : g.items).length - list.length;
+    const all = items.length ? items : g.items;
+    const list = all.slice(0, 300);
+    const extra = all.length - list.length;
+    const drawable = state.miniMaps && MAPPABLE_CODES.has(g.code);
     return `<details class="group ${g.severity}">
       <summary>
         <span class="title">${esc(CODE_TITLES[g.code] || g.code)}</span>
         <span class="code">${esc(g.code)}</span>
         <span class="count">${g.items.length}</span>
       </summary>
-      <ol>${list.map((i) => `<li>${esc(i.message)}</li>`).join('')}
+      <ol class="${drawable ? 'with-maps' : ''}">${list.map((i) => findingRow(i, drawable)).join('')}
       ${extra > 0 ? `<li class="more">…and ${extra} more; the full list is in the JSON export.</li>` : ''}</ol>
     </details>`;
   }).join('');
+
+  watchMiniMaps();
+}
+
+// The picture is only built once the row is actually on screen: a group can
+// hold hundreds of findings and each one needs its shape cropped and projected.
+function findingRow(finding, drawable) {
+  if (!drawable) return `<li>${esc(finding.message)}</li>`;
+  const idx = state.rendered.push(finding) - 1;
+  return `<li class="has-map"><div class="mm-slot" data-finding="${idx}"></div><div class="mm-text">${esc(finding.message)}</div></li>`;
+}
+
+function watchMiniMaps() {
+  if (state.mapObserver) state.mapObserver.disconnect();
+  const slots = $$('#findings-list .mm-slot');
+  if (!slots.length) return;
+  state.mapObserver = new IntersectionObserver((entries, obs) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      obs.unobserve(e.target);
+      drawSlot(e.target);
+    }
+  }, { rootMargin: '200px' });
+  for (const slot of slots) state.mapObserver.observe(slot);
+}
+
+function drawSlot(slot) {
+  const finding = state.rendered[Number(slot.dataset.finding)];
+  if (!finding) return;
+  let geo = null;
+  try { geo = findingGeo(finding, state.result.model, state.gtfs); } catch (e) { geo = null; }
+  if (!geo) { slot.classList.add('mm-none'); slot.textContent = 'no geometry'; return; }
+  const c = finding.context || {};
+  slot.innerHTML = miniMapSvg(geo, state.gtfs, state.result.model) +
+    `<button type="button" class="mm-open" data-entity="${esc(c.entity === undefined ? '' : c.entity)}" ` +
+    `data-trip="${esc(c.trip === undefined ? (geo.plan ? geo.plan.tripId : '') : c.trip)}" ` +
+    `data-stop="${esc(c.stop === undefined ? '' : c.stop)}">Open in map</button>`;
+}
+
+// Jumps the big Leaflet map to whatever a finding is about.
+function openInMap(entityId, tripId, stopId) {
+  const entities = state.result.model.entities;
+  const ei = entities.findIndex((e) => e.id === entityId);
+  if (ei < 0) return;
+  $('#entity-select').value = String(ei);
+  renderTripPicker();
+  const plans = entities[ei].plans;
+  let pi = plans.findIndex((p) => p.tripId === tripId);
+  if (pi < 0) pi = plans.findIndex((p) => p.sharedWith && p.sharedWith.includes(tripId));
+  if (pi >= 0) { $('#trip-select').value = String(pi); renderInspector(); }
+  $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === 'map'));
+  for (const name of ['findings', 'inspector', 'map']) $('#panel-' + name).hidden = name !== 'map';
+  renderMap(stopId || null);
 }
 
 function renderEntityPicker() {
@@ -391,13 +464,13 @@ function describeSelector(sel, res, plan) {
   return txt;
 }
 
-async function renderMap() {
+async function renderMap(focusStopId) {
   const cur = currentPlan();
   const holder = $('#map');
   if (!cur || cur.plan.missing) { holder.innerHTML = '<p class="empty" style="padding:16px">Nothing to draw for this trip.</p>'; return; }
   if (!state.planMap) state.planMap = new PlanMap(holder);
   try {
-    await state.planMap.show(cur.plan, state.gtfs, state.result.model);
+    await state.planMap.show(cur.plan, state.gtfs, state.result.model, focusStopId);
   } catch (e) {
     holder.innerHTML = `<p class="empty" style="padding:16px">${esc(e.message)}</p>`;
   }
@@ -449,6 +522,17 @@ $$('.tab').forEach((tab) => tab.addEventListener('click', () => {
   for (const name of ['findings', 'inspector', 'map']) $('#panel-' + name).hidden = name !== tab.dataset.tab;
   if (tab.dataset.tab === 'map') renderMap();
 }));
+
+$('#findings-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('.mm-open');
+  if (!btn) return;
+  openInMap(btn.dataset.entity, btn.dataset.trip, btn.dataset.stop);
+});
+
+// A group that opens has rows the observer has not seen yet.
+$('#findings-list').addEventListener('toggle', (e) => {
+  if (e.target.tagName === 'DETAILS' && e.target.open) watchMiniMaps();
+}, true);
 
 $$('.sev').forEach((c) => c.addEventListener('change', () => { if (state.result) renderFindings(); }));
 $('#finding-search').addEventListener('input', () => { if (state.result) renderFindings(); });

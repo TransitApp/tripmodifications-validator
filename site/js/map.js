@@ -27,7 +27,7 @@ export class PlanMap {
     this.layer = null;
   }
 
-  async show(plan, gtfs, model) {
+  async show(plan, gtfs, model, focusStopId) {
     const L = await loadLeaflet();
     if (!this.map) {
       this.map = L.map(this.container, { zoomControl: true });
@@ -71,6 +71,15 @@ export class PlanMap {
 
     if (bounds.length) this.map.fitBounds(bounds, { padding: [24, 24] });
     else this.map.setView([0, 0], 2);
+
+    // Arriving from a finding: go straight to the stop it is about.
+    if (focusStopId) {
+      const ll = (gtfs && gtfs.stopLatLon(focusStopId)) || feedStopLatLon(model, focusStopId);
+      if (ll) {
+        this.map.setView(ll, 17);
+        L.circleMarker(ll, { radius: 14, color: '#d29922', weight: 3, fill: false }).addTo(this.layer);
+      }
+    }
     setTimeout(() => this.map.invalidateSize(), 0);
   }
 
