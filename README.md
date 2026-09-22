@@ -58,9 +58,20 @@ Findings are grouped into **errors** (the feed violates the spec or will break a
 - `Stop.stop_id` does not collide with `stops.txt`, and `stop_name`, `stop_lat`, `stop_lon` are present.
 
 ### Against the static feed
-- Selected `trip_id`s exist in `trips.txt` and actually run on each `service_date`, from `calendar.txt`
-  plus the `calendar_dates.txt` exceptions.
-- No `(trip_id, service_date)` pair is claimed twice.
+- Selected `trip_id`s exist in `trips.txt`. The spec is explicit that a trip need not run on every
+  `service_date`, so only a trip that runs on **none** of them is reported, from `calendar.txt` plus the
+  `calendar_dates.txt` exceptions.
+- No `(trip_id, service_date)` pair is claimed twice — on a given date a trip must not belong to more than
+  one `TripModifications`.
+- `SelectedTrips` sets a `shape_id`, which the spec marks required.
+- A selector that names only `stop_id` on a trip that visits that stop twice, where the spec requires
+  `stop_sequence` to say which visit is meant.
+- Modification spans do not overlap, and are not contiguous either — the spec says two touching spans must
+  be merged into one.
+- `ReplacementStop.stop_id` resolves to a stop with `location_type=0`; a station or an entrance is not
+  routable.
+- `travel_time_to_stop` never decreases, and is only negative when the modification begins at the trip's
+  first stop, which is the only case where the reference stop allows it.
 - `StopSelector.stop_id` exists in `stops.txt`; when **none** of them do, that gets its own prominent
   finding, because producers commonly emit internal scheduling codes here.
 - A selector that sets both `stop_sequence` and `stop_id` has them agree, and the `stop_sequence` exists
@@ -82,17 +93,28 @@ Distances are planar with a `cos(lat)` correction on longitude, and every thresh
 
 ### With an Alerts feed loaded
 - Every `service_alert_id` matches an `Alert` entity id, with the placeholder `"0"` called out by name.
+- `header_text`, `description_text` and at least one `informed_entity` are present, all three required.
+- Each `informed_entity` sets at least one field, and each `active_period` sets a start or an end.
 - `informed_entity.stop_id` / `route_id` resolve against `stops.txt` / `routes.txt`.
-- Unfinished text: an empty reason, a `---` placeholder, or the word "test" in the body.
+- Unfinished text: a `---` placeholder, the word "test" in the body, or a `cause_detail` with no `cause`
+  (`cause` on its own is optional, and is not reported).
 - An `active_period.end` more than two years out, which is always a sentinel.
 
 ### With a TripUpdates feed loaded
 - `modified_trip.modifications_id` is the **`FeedEntity.id` of a `TripModifications` entity**, not a trip
   id. Producers get this wrong constantly, so when the value turns out to be a trip id the finding says
   exactly that.
-- `modified_trip.affected_trip_id` is in `trips.txt` and is selected by the entity `modifications_id` names.
-- `trip_id` is not set alongside `modified_trip`.
-- Entity ids are unique, and a trip does not appear both plain and modified.
+- `modified_trip` sets both `modifications_id` and `affected_trip_id`, and `affected_trip_id` is in
+  `trips.txt` and is selected by the entity `modifications_id` names.
+- None of `trip_id`, `route_id`, `direction_id`, `start_time`, `start_date` is set alongside
+  `modified_trip`.
+- No `schedule_relationship=REPLACEMENT` TripUpdate already exists for a trip a `TripModifications`
+  selects.
+- Every entity in effect **today** is named by some TripUpdate, since that is the only way to predict at a
+  replacement stop.
+- A modified trip also has a plain TripUpdate on its `trip_id`. The spec asks for both, so clients that do
+  not understand TripModifications still get predictions.
+- Entity ids are unique.
 
 ## Output
 
@@ -130,6 +152,18 @@ cd site && python3 -m http.server 8000
 
 Then open <http://localhost:8000/>. Opening `index.html` straight from the filesystem does not work,
 because ES modules and Web Workers both need a real origin.
+
+## Which spec, and how the checks were derived
+
+Every check traces to a line in
+[`reference.md`](https://github.com/google/transit/blob/master/gtfs-realtime/spec/en/reference.md) or
+[`trip-modifications.md`](https://github.com/google/transit/blob/master/gtfs-realtime/spec/en/trip-modifications.md)
+at the pinned commit below. Where the spec permits something, this tool does not report it, and where the
+spec lets a consumer infer a missing value the finding says so rather than claiming the feed is broken.
+
+`test/spec-rules.test.mjs` holds one case per rule, including the cases that must stay **silent**. Run it
+with `node test/spec-rules.test.mjs`. Those negative cases matter more than the positive ones: the easy
+mistake in a validator is to over-read the spec and turn a correct feed into a wall of red.
 
 ## The vendored .proto
 

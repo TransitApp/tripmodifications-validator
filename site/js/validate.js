@@ -73,6 +73,9 @@ function resolveSelector(sel, stops) {
   }
   const i = stops.stopIds.indexOf(sel.stop_id);
   if (i < 0) return { index: -1, reason: 'stop-not-in-trip' };
+  // The spec requires stop_sequence when a trip visits the same stop_id more
+  // than once, because stop_id alone cannot say which visit is meant.
+  if (stops.stopIds.lastIndexOf(sel.stop_id) !== i) return { index: i, reason: 'ambiguous-stop' };
   return { index: i, reason: null };
 }
 
@@ -286,6 +289,8 @@ function checkModifications(ent, f, s) {
   for (let i = 0; i < mods.length; i++) {
     const mod = mods[i];
     const where = { entity: ent.id, modification: i };
+    // undefined when no selected trip resolved, so the rule is not applied blind.
+    const startsAtFirstStop = firstStopStart(ent, i);
 
     for (const [name, sel] of [['start_stop_selector', mod.start_stop_selector], ['end_stop_selector', mod.end_stop_selector]]) {
       if (sel && sel.stop_sequence === undefined && sel.stop_id === undefined) {
@@ -329,9 +334,16 @@ function checkModifications(ent, f, s) {
       }
       if (rs.travel_time_to_stop === undefined) {
         f.warn('W_REPLACEMENT_STOP_NO_TRAVEL_TIME',
-          `Entity "${ent.id}" modification ${i} replacement_stops[${k}] ("${rs.stop_id}") has no travel_time_to_stop, so a consumer cannot time the inserted stop.`,
+          `Entity "${ent.id}" modification ${i} replacement_stops[${k}] ("${rs.stop_id}") has no travel_time_to_stop. The spec allows that and lets a consumer interpolate from the duration of the modification, but the interpolated arrival will differ between apps.`,
           Object.assign({ replacement: k, stop: rs.stop_id }, where));
       } else {
+        // Negative offsets are only legal when the reference stop is the first
+        // stop of the trip, which only happens when the modification starts there.
+        if (rs.travel_time_to_stop < 0 && startsAtFirstStop === false) {
+          f.error('E_TRAVEL_TIME_NEGATIVE',
+            `Entity "${ent.id}" modification ${i} replacement_stops[${k}] has travel_time_to_stop ${rs.travel_time_to_stop}s. It may only be negative when the modification begins at the first stop of the trip, so that the first stop is the reference stop.`,
+            Object.assign({ replacement: k, value: rs.travel_time_to_stop }, where));
+        }
         if (lastTravel !== null && rs.travel_time_to_stop < lastTravel) {
           f.error('E_TRAVEL_TIME_NOT_MONOTONIC',
             `Entity "${ent.id}" modification ${i}: travel_time_to_stop drops from ${lastTravel}s to ${rs.travel_time_to_stop}s at replacement_stops[${k}]. It must increase along the list.`,
@@ -355,8 +367,8 @@ function checkModifications(ent, f, s) {
   if (usable) {
     for (let i = 1; i < keys.length; i++) {
       if (keys[i].start < keys[i - 1].start) {
-        f.error('E_MODIFICATIONS_OUT_OF_ORDER',
-          `Entity "${ent.id}": modification ${i} starts at stop_sequence ${keys[i].start}, before modification ${i - 1} at ${keys[i - 1].start}. Modifications must be in increasing order.`,
+        f.warn('E_MODIFICATIONS_OUT_OF_ORDER',
+          `Entity "${ent.id}": modification ${i} starts at stop_sequence ${keys[i].start}, before modification ${i - 1} at ${keys[i - 1].start}. The spec only requires that spans not overlap, but listing them out of order usually means the wrong selector was used.`,
           { entity: ent.id, modification: i });
       } else if (keys[i].start <= keys[i - 1].end) {
         f.error('E_MODIFICATIONS_OVERLAP',
@@ -367,6 +379,20 @@ function checkModifications(ent, f, s) {
   }
 }
 
+// Does this modification begin at the very first stop of its trips?
+// undefined when nothing resolved and the question cannot be answered.
+function firstStopStart(ent, modIndex) {
+  let known = false;
+  for (const plan of ent.plans || []) {
+    if (plan.missing || plan.noStopTimes) continue;
+    const r = (plan.ranges || []).find((x) => x.modIndex === modIndex);
+    if (!r || r.start.index < 0) continue;
+    known = true;
+    if (r.start.index === 0) return true;
+  }
+  return known ? false : undefined;
+}
+
 function checkCrossRefs(model, f, s, gtfs) {
   const claimed = new Map();     // "trip|date" -> entity id
   const selectorStopIds = new Set();
@@ -375,6 +401,7 @@ function checkCrossRefs(model, f, s, gtfs) {
   const referencedStops = new Set();
   const seenUnknownTrips = new Set();
   const tripsWithoutStopTimes = new Set();
+  const contiguousSeen = new Set();
   if (!gtfs.canCheckServiceDates) f.skip('Service-date check', 'the static feed has no calendar.txt or calendar_dates.txt');
 
   for (const ent of model.entities) {
@@ -382,7 +409,11 @@ function checkCrossRefs(model, f, s, gtfs) {
     const routesSeen = new Set(), dirsSeen = new Set();
 
     for (const st of ent.mods.selected_trips || []) {
-      if (st.shape_id !== undefined) {
+      if (st.shape_id === undefined || st.shape_id === '') {
+        f.error('E_SELECTED_TRIPS_NO_SHAPE',
+          `Entity "${ent.id}" has a selected_trips with no shape_id. The spec marks shape_id required: every SelectedTrips must name the new shape its trips will follow.`,
+          { entity: ent.id });
+      } else {
         referencedShapes.add(st.shape_id);
         const inFeed = model.shapesById.has(st.shape_id);
         const inStatic = gtfs.hasShapePoints(st.shape_id);
@@ -406,21 +437,28 @@ function checkCrossRefs(model, f, s, gtfs) {
         const d = gtfs.tripDirection(tripId);
         if (d !== null) dirsSeen.add(d);
 
+        let validDates = 0, runsOnSome = 0;
         for (const date of dates) {
           if (!toDate(date)) continue;
+          validDates++;
           const key = tripId + '|' + date;
           const prior = claimed.get(key);
           if (prior !== undefined && prior !== ent.id) {
             f.error('E_DUPLICATE_TRIP_DATE',
-              `Trip "${tripId}" on ${date} is claimed by both entity "${prior}" and entity "${ent.id}". A trip may only be modified once per date.`,
+              `Trip "${tripId}" on ${date} is claimed by both entity "${prior}" and entity "${ent.id}". On any given service date a trip must not be assigned to more than one TripModifications.`,
               { entity: ent.id, otherEntity: prior, trip: tripId, date });
           } else {
             claimed.set(key, ent.id);
           }
-          if (gtfs.canCheckServiceDates && !gtfs.runsOn(tripId, date)) {
-            f.error('E_TRIP_NOT_RUNNING', `Trip "${tripId}" does not run on ${date} according to calendar.txt and calendar_dates.txt, but entity "${ent.id}" modifies it that day.`,
-              { entity: ent.id, trip: tripId, date });
-          }
+          if (gtfs.canCheckServiceDates && gtfs.runsOn(tripId, date)) runsOnSome++;
+        }
+        // The spec is explicit that a trip is not required to run on every
+        // service_date -- only the dates it does run get modified. Running on
+        // none of them is what makes the selection pointless.
+        if (gtfs.canCheckServiceDates && validDates > 0 && runsOnSome === 0) {
+          f.error('E_TRIP_RUNS_ON_NO_SERVICE_DATE',
+            `Entity "${ent.id}" selects trip "${tripId}", which runs on none of its ${validDates} service_date(s) according to calendar.txt and calendar_dates.txt, so the modification never applies to it.`,
+            { entity: ent.id, trip: tripId, dates: dates.join(' ') });
         }
       }
     }
@@ -447,6 +485,13 @@ function checkCrossRefs(model, f, s, gtfs) {
           f.error('E_REPLACEMENT_STOP_UNRESOLVED',
             `Entity "${ent.id}" modification ${i}: replacement stop "${rs.stop_id}" is neither in stops.txt nor a Stop entity in this feed.`,
             { entity: ent.id, modification: i, stop: rs.stop_id });
+        } else if (gtfs.hasStop(rs.stop_id)) {
+          const lt = gtfs.stopLocationType(rs.stop_id);
+          if (lt !== 0) {
+            f.error('E_REPLACEMENT_STOP_NOT_ROUTABLE',
+              `Entity "${ent.id}" modification ${i}: replacement stop "${rs.stop_id}" has location_type=${lt} in stops.txt. A replacement stop must have location_type=0, a routable stop, not a station or entrance.`,
+              { entity: ent.id, modification: i, stop: rs.stop_id, locationType: lt });
+          }
         }
       }
     }
@@ -458,6 +503,25 @@ function checkCrossRefs(model, f, s, gtfs) {
       const seqs = plan.stops.sequences;
       const range = seqs.length ? `${seqs[0]}–${seqs[seqs.length - 1]}` : 'empty';
       const alsoOn = plan.sharedWith.length ? ` (and ${plan.sharedWith.length} trip(s) with the same stop pattern)` : '';
+      // "Spans may not be contiguous; in this case the two modifications MUST be
+      // merged into one." Resolved positions say this more reliably than raw
+      // stop_sequence values, which need not be consecutive.
+      const spans = plan.ranges
+        .filter((r) => r.start.index >= 0)
+        .map((r) => ({ modIndex: r.modIndex, from: r.start.index, to: r.end.index === null ? r.start.index - 1 : Math.max(r.end.index, r.start.index) }))
+        .sort((a, b) => a.from - b.from);
+      for (let k = 1; k < spans.length; k++) {
+        if (spans[k].from === spans[k - 1].to + 1) {
+          const key = ent.id + '|' + spans[k].modIndex;
+          if (!contiguousSeen.has(key)) {
+            contiguousSeen.add(key);
+            f.error('E_MODIFICATIONS_CONTIGUOUS',
+              `Entity "${ent.id}": modification ${spans[k].modIndex} starts at the stop immediately after modification ${spans[k - 1].modIndex} ends, on trip "${plan.tripId}". Contiguous spans must be merged into one modification.`,
+              { entity: ent.id, modification: spans[k].modIndex, trip: plan.tripId });
+          }
+        }
+      }
+
       for (const r of plan.ranges) {
         for (const [name, res, sel] of [
           ['start_stop_selector', r.start, r.mod.start_stop_selector],
@@ -473,6 +537,10 @@ function checkCrossRefs(model, f, s, gtfs) {
             f.error('E_SELECTOR_STOP_SEQ_MISMATCH',
               `Entity "${ent.id}" modification ${r.modIndex}: ${name} names stop "${sel.stop_id}" at stop_sequence ${sel.stop_sequence}, but trip "${plan.tripId}" has "${res.actualStopId}" at that sequence.`,
               { entity: ent.id, modification: r.modIndex, trip: plan.tripId, selector: name, stop: sel.stop_id, actualStop: res.actualStopId });
+          } else if (res.reason === 'ambiguous-stop') {
+            f.error('E_SELECTOR_AMBIGUOUS_STOP',
+              `Entity "${ent.id}" modification ${r.modIndex}: ${name} names only stop_id "${sel.stop_id}", but trip "${plan.tripId}"${alsoOn} visits that stop more than once. The spec requires stop_sequence to disambiguate which visit is meant.`,
+              { entity: ent.id, modification: r.modIndex, trip: plan.tripId, selector: name, stop: sel.stop_id });
           } else if (res.reason === 'stop-not-in-trip' && gtfs.hasStop(sel.stop_id)) {
             f.error('E_SELECTOR_SEQ_NOT_IN_TRIP',
               `Entity "${ent.id}" modification ${r.modIndex}: ${name} names stop "${sel.stop_id}", which trip "${plan.tripId}"${alsoOn} does not serve.`,
@@ -608,23 +676,43 @@ function checkAlerts(model, alertsFeed, f, s, gtfs) {
     }
     const header = translated(alert.header_text);
     const body = translated(alert.description_text);
+    const missing = [];
+    if (!header) missing.push('header_text');
+    if (!body) missing.push('description_text');
+    if (missing.length) {
+      f.error('E_ALERT_MISSING_TEXT', `Alert "${id}" has no ${missing.join(' and no ')}. Both are required.`, { entity: id, missing });
+    }
+    if (!(alert.informed_entity || []).length) {
+      f.error('E_ALERT_NO_INFORMED_ENTITY', `Alert "${id}" has no informed_entity. At least one is required, or nothing says who the alert is about.`, { entity: id });
+    }
+
     const problems = [];
-    if (!header) problems.push('no header_text');
-    if (!body) problems.push('no description_text');
     for (const [name, text] of [['header_text', header], ['description_text', body]]) {
       if (!text) continue;
       if (/^[-–—\s.]+$/.test(text)) problems.push(`${name} is just "${text.trim()}"`);
       else if (/\btest(ing|s)?\b/i.test(text)) problems.push(`${name} contains the word "test"`);
     }
-    if (!alert.cause || alert.cause === 'UNKNOWN_CAUSE') problems.push('no cause');
+    // cause is only required when cause_detail is set, and the same for effect.
+    if (alert.cause_detail && (!alert.cause || alert.cause === 'UNKNOWN_CAUSE')) problems.push('cause_detail is set but cause is not');
+    if (alert.effect_detail && (!alert.effect || alert.effect === 'UNKNOWN_EFFECT')) problems.push('effect_detail is set but effect is not');
     if (problems.length) {
       f.warn('W_ALERT_TEXT_PLACEHOLDER', `Alert "${id}" looks unfinished: ${problems.join('; ')}.`, { entity: id, problems });
     }
+
     for (const p of alert.active_period || []) {
+      if (p.start === undefined && p.end === undefined) {
+        f.error('E_ALERT_EMPTY_TIMERANGE', `Alert "${id}" has an active_period with neither start nor end. A TimeRange must set at least one of them.`, { entity: id });
+      }
       if (p.end !== undefined && Number(p.end) > farFuture) {
         const year = new Date(Number(p.end) * 1000).getUTCFullYear();
         f.warn('W_ALERT_END_FAR_FUTURE', `Alert "${id}" has an active_period ending in ${year}. That is a sentinel value, not a real end time.`,
           { entity: id, end: Number(p.end), year });
+      }
+    }
+    for (const ie of alert.informed_entity || []) {
+      const anySet = ['agency_id', 'route_id', 'route_type', 'direction_id', 'trip', 'stop_id'].some((k) => ie[k] !== undefined);
+      if (!anySet) {
+        f.error('E_ALERT_EMPTY_SELECTOR', `Alert "${id}" has an informed_entity with every field empty. At least one specifier must be given.`, { entity: id });
       }
     }
   }
@@ -640,6 +728,7 @@ function checkTripUpdates(model, tuFeed, f, s, gtfs) {
   const idCounts = new Map();
   const plainTrips = new Set(), modifiedTrips = new Set();
   const unknownTuStops = new Map();
+  const referencedEntities = new Set();
 
   for (const e of tuFeed.entity || []) {
     const eid = String(e.id === undefined ? '' : e.id);
@@ -650,13 +739,22 @@ function checkTripUpdates(model, tuFeed, f, s, gtfs) {
     const mt = trip.modified_trip;
 
     if (mt) {
-      if (trip.trip_id !== undefined) {
+      const alsoSet = ['trip_id', 'route_id', 'direction_id', 'start_time', 'start_date'].filter((k) => trip[k] !== undefined);
+      if (alsoSet.length) {
         f.error('E_TRIP_ID_WITH_MODIFIED_TRIP',
-          `TripUpdate "${eid}" sets both trip_id "${trip.trip_id}" and modified_trip. When modified_trip is present, trip_id, route_id, direction_id, start_time and start_date must all be left empty.`,
-          { entity: eid, trip: trip.trip_id });
+          `TripUpdate "${eid}" sets modified_trip and also ${alsoSet.map((k) => k + ' "' + trip[k] + '"').join(', ')}. ` +
+          'When modified_trip is present, trip_id, route_id, direction_id, start_time and start_date must all be left empty, so consumers that do not read ModifiedTripSelector are not misled.',
+          { entity: eid, fields: alsoSet, trip: trip.trip_id });
+      }
+      for (const req of ['modifications_id', 'affected_trip_id']) {
+        if (mt[req] === undefined || mt[req] === '') {
+          f.error('E_MODIFIED_TRIP_MISSING_FIELD', `TripUpdate "${eid}" has a modified_trip with no ${req}. Both modifications_id and affected_trip_id are required.`,
+            { entity: eid, field: req });
+        }
       }
       const modsId = mt.modifications_id;
       if (modsId !== undefined) {
+        referencedEntities.add(String(modsId));
         if (!byEntityId.has(String(modsId))) {
           if (selectedTripToEntity.has(String(modsId)) || (gtfs && gtfs.hasTrip(String(modsId)))) {
             f.error('E_MODIFICATIONS_ID_IS_TRIP_ID',
@@ -686,6 +784,13 @@ function checkTripUpdates(model, tuFeed, f, s, gtfs) {
       }
     } else if (trip.trip_id !== undefined) {
       plainTrips.add(trip.trip_id);
+      // A REPLACEMENT TripUpdate must not already exist for a trip a
+      // TripModifications selects; the two ways of replacing a trip conflict.
+      if (trip.schedule_relationship === 'REPLACEMENT' && selectedTripToEntity.has(trip.trip_id)) {
+        f.error('E_REPLACEMENT_TRIPUPDATE_EXISTS',
+          `TripUpdate "${eid}" sets schedule_relationship=REPLACEMENT for trip "${trip.trip_id}", which entity "${selectedTripToEntity.get(trip.trip_id)}" also modifies. A REPLACEMENT TripUpdate must not already exist for a trip selected by a TripModifications.`,
+          { entity: eid, trip: trip.trip_id, modificationsEntity: selectedTripToEntity.get(trip.trip_id) });
+      }
     }
 
     if (gtfs) {
@@ -709,8 +814,21 @@ function checkTripUpdates(model, tuFeed, f, s, gtfs) {
     if (n > 1) f.error('E_DUPLICATE_ENTITY_ID', `TripUpdates feed: entity id "${id}" is used by ${n} entities.`, { entity: id, count: n, feed: 'TripUpdates' });
   }
   for (const t of modifiedTrips) {
-    if (plainTrips.has(t)) {
-      f.warn('W_TU_TRIP_PLAIN_AND_MODIFIED', `Trip "${t}" appears in the TripUpdates feed both as a plain trip_id and as a modified_trip.affected_trip_id. Consumers will see it twice.`, { trip: t });
+    if (!plainTrips.has(t)) {
+      f.warn('W_TU_NO_UNMODIFIED_COUNTERPART',
+        `Trip "${t}" has a TripUpdate with a modified_trip but no plain TripUpdate on its trip_id. The spec asks for both, so that clients which do not understand TripModifications still get predictions.`,
+        { trip: t });
+    }
+  }
+  // Only entities in effect today can be expected to have a TripUpdate; one
+  // published for next Friday has nothing to predict yet.
+  const today = todayYmd();
+  for (const ent of model.entities) {
+    if (!(ent.mods.service_dates || []).includes(today)) continue;
+    if (!referencedEntities.has(ent.id)) {
+      f.warn('W_NO_TRIPUPDATE_FOR_MODIFICATION',
+        `Entity "${ent.id}" is in effect today (${today}) but no TripUpdate names it in modified_trip.modifications_id. A TripUpdate must be provided to publish arrival and departure times for a replacement trip, and it is the only way to predict at replacement stops.`,
+        { entity: ent.id, date: today });
     }
   }
 }

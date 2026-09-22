@@ -31,6 +31,12 @@ export class Gtfs {
     return i === undefined ? null : this.stops.names[i];
   }
 
+  // location_type from stops.txt; a replacement stop must be 0 (routable).
+  stopLocationType(id) {
+    const i = this.stopIdx.get(id);
+    return i === undefined ? null : this.stops.locationType[i];
+  }
+
   stopLatLon(id) {
     const i = this.stopIdx.get(id);
     if (i === undefined) return null;
