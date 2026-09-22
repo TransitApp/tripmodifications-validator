@@ -281,6 +281,8 @@ function checkStructure(model, f, s, gtfs) {
 function checkModifications(ent, f, s) {
   const mods = ent.mods.modifications || [];
   const keys = [];
+  // A shape-only modification needs the entity to actually supply a new shape.
+  const hasNewShape = (ent.mods.selected_trips || []).some((st) => st.shape_id !== undefined && st.shape_id !== '');
   for (let i = 0; i < mods.length; i++) {
     const mod = mods[i];
     const where = { entity: ent.id, modification: i };
@@ -297,10 +299,16 @@ function checkModifications(ent, f, s) {
     }
 
     const replacements = mod.replacement_stops || [];
-    if (!mod.end_stop_selector && replacements.length === 0) {
+    // Omitting end_stop_selector is legal in two cases: a pure insertion, and
+    // the spec's shape-only modification, where the path changes but no stop
+    // does. It only does nothing at all when there is no new shape and no
+    // propagated delay either.
+    if (!mod.end_stop_selector && replacements.length === 0 &&
+        !hasNewShape && mod.propagated_modification_delay === undefined) {
       f.error('E_MODIFICATION_NOOP',
-        `Entity "${ent.id}" modification ${i} has no end_stop_selector and no replacement_stops, so it removes nothing and adds nothing. ` +
-        'end_stop_selector may only be omitted for a pure insertion, and an insertion needs replacement_stops.',
+        `Entity "${ent.id}" modification ${i} has no end_stop_selector, no replacement_stops, no propagated_modification_delay, ` +
+        'and its selected_trips set no shape_id, so it changes nothing. A modification with no end_stop_selector is either a pure ' +
+        'insertion (which needs replacement_stops) or a shape-only modification (which needs a new shape_id).',
         where);
     }
 
@@ -333,9 +341,11 @@ function checkModifications(ent, f, s) {
       }
     }
 
-    if (mod.end_stop_selector && mod.propagated_modification_delay === undefined) {
+    if (mod.propagated_modification_delay === undefined) {
+      const what = mod.end_stop_selector ? 'replaces stop times' : replacements.length ? 'inserts stops' : 'changes the path';
       f.warn('W_NO_PROPAGATED_DELAY',
-        `Entity "${ent.id}" modification ${i} replaces stop times but sets no propagated_modification_delay, so every later arrival and departure stays at its scheduled time.`,
+        `Entity "${ent.id}" modification ${i} ${what} but sets no propagated_modification_delay. ` +
+        'The spec allows that and lets a consumer infer the delay, but each one will infer it differently, so downstream times will not agree between apps.',
         where);
     }
   }

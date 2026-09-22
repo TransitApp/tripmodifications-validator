@@ -44,13 +44,15 @@ Findings are grouped into **errors** (the feed violates the spec or will break a
 - `service_dates` parse as `YYYYMMDD` and are not in the past.
 - `start_times` is only used with a single trip in a single `SelectedTrips`.
 - Every `StopSelector` sets `stop_sequence`, `stop_id`, or both.
-- `end_stop_selector` may only be omitted for a pure insertion, so a modification with neither an
-  `end_stop_selector` nor any `replacement_stops` does nothing and is reported.
+- Omitting `end_stop_selector` is legal in two ways: a pure insertion, and the spec's shape-only
+  modification, where the path changes but no stop does. Such a modification is only reported when it
+  also has no `replacement_stops`, no new `shape_id` and no `propagated_modification_delay`, which is the
+  one case where it genuinely changes nothing.
 - `end_stop_selector` does not come before `start_stop_selector`, and modifications within an entity are
   in increasing order and do not overlap.
 - Every `ReplacementStop` has a `stop_id`; `travel_time_to_stop` is present and increases along the list.
-- `propagated_modification_delay` is set on a modification that replaces stop times — without it every
-  downstream time stays at schedule.
+- `propagated_modification_delay` is set. Omitting it is legal and consumers may infer a value, but each
+  one infers differently, so downstream times stop agreeing between apps.
 - `Shape.shape_id` does not collide with `shapes.txt`, and the polyline decodes to at least two points
   with no repeated points.
 - `Stop.stop_id` does not collide with `stops.txt`, and `stop_name`, `stop_lat`, `stop_lon` are present.
