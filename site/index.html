@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TripModifications validator</title>
+<meta name="description" content="Validate a GTFS-Realtime TripModifications feed against a static GTFS feed, entirely in your browser.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='14'>🚧</text></svg>">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/protobufjs@7.4.0/dist/protobuf.min.js"></script>
+</head>
+<body>
+
+<header class="page-head">
+  <div class="wrap">
+    <h1>TripModifications validator</h1>
+    <p class="lede">
+      Checks a GTFS-Realtime <code>TripModifications</code> feed against the static GTFS it modifies.
+      Everything runs in this page &mdash; no file you load ever leaves your browser.
+    </p>
+  </div>
+</header>
+
+<main class="wrap">
+
+<section class="inputs" id="inputs">
+  <div class="input-card" data-slot="static">
+    <h2>Static GTFS <span class="req">required</span></h2>
+    <div class="drop" tabindex="0"><span>Drop <code>.zip</code> here, or click to choose</span><input type="file" accept=".zip,application/zip" hidden></div>
+    <div class="url-row"><input type="url" placeholder="https://…/google_transit.zip" spellcheck="false"><button type="button" class="load">Fetch</button></div>
+    <p class="slot-status">Nothing loaded.</p>
+  </div>
+
+  <div class="input-card" data-slot="mods">
+    <h2>TripModifications <span class="req">required</span></h2>
+    <div class="drop" tabindex="0"><span>Drop the <code>.pb</code> here, or click to choose</span><input type="file" hidden></div>
+    <div class="url-row"><input type="url" placeholder="https://…/TripModifications.pb" spellcheck="false"><button type="button" class="load">Fetch</button></div>
+    <p class="slot-status">Nothing loaded.</p>
+  </div>
+
+  <div class="input-card" data-slot="tripupdates">
+    <h2>TripUpdates <span class="opt">optional</span></h2>
+    <div class="drop" tabindex="0"><span>Drop the <code>.pb</code> here, or click to choose</span><input type="file" hidden></div>
+    <div class="url-row"><input type="url" placeholder="https://…/TripUpdates.pb" spellcheck="false"><button type="button" class="load">Fetch</button></div>
+    <p class="slot-status">Not loaded. Enables the <code>modified_trip</code> checks.</p>
+  </div>
+
+  <div class="input-card" data-slot="alerts">
+    <h2>Alerts <span class="opt">optional</span></h2>
+    <div class="drop" tabindex="0"><span>Drop the <code>.pb</code> here, or click to choose</span><input type="file" hidden></div>
+    <div class="url-row"><input type="url" placeholder="https://…/Alerts.pb" spellcheck="false"><button type="button" class="load">Fetch</button></div>
+    <p class="slot-status">Not loaded. Enables the <code>service_alert_id</code> checks.</p>
+  </div>
+</section>
+
+<div class="actions">
+  <button type="button" id="validate" class="primary" disabled>Validate</button>
+  <button type="button" id="clear">Clear</button>
+</div>
+
+<div class="note" id="cors-note">
+  <strong>Fetching by URL usually fails.</strong>
+  Most transit servers do not send CORS headers, and a page with no backend cannot work around that.
+  When a fetch fails, download the file yourself and drop it in &mdash; that always works.
+</div>
+
+<details class="settings">
+  <summary>Settings</summary>
+  <div class="settings-grid">
+    <label>New shape must start and end within
+      <input type="number" id="set-shapeEndpointM" min="0" step="10"> m of the trip's terminus</label>
+    <label>A retained stop must be within
+      <input type="number" id="set-retainedStopM" min="0" step="10"> m of the new shape</label>
+    <label>A removed stop still looks served below
+      <input type="number" id="set-removedStopM" min="0" step="5"> m</label>
+    <label>Header timestamp may differ from this clock by
+      <input type="number" id="set-clockSkewMinutes" min="0" step="1"> minutes</label>
+    <label>Flag service_dates older than
+      <input type="number" id="set-pastDateGraceDays" min="0" step="1"> days</label>
+    <label class="wide">CORS proxy prefix (blank by default; the URL is appended to it)
+      <input type="text" id="set-proxy" placeholder="https://my-proxy.example/?url=" spellcheck="false"></label>
+  </div>
+  <p class="fine">Nothing is sent anywhere unless you type a proxy here yourself.</p>
+</details>
+
+<div class="progress" id="progress" hidden>
+  <div class="bar"><div class="fill" id="progress-fill"></div></div>
+  <p id="progress-label"></p>
+</div>
+
+<div class="banner" id="banner" hidden></div>
+
+<section id="results" hidden>
+  <div class="summary" id="summary"></div>
+  <div class="skipped" id="skipped"></div>
+
+  <nav class="tabs">
+    <button type="button" class="tab active" data-tab="findings">Findings</button>
+    <button type="button" class="tab" data-tab="inspector">Entity inspector</button>
+    <button type="button" class="tab" data-tab="map">Map</button>
+    <span class="spacer"></span>
+    <button type="button" id="export-json">Export JSON</button>
+    <button type="button" id="export-md">Export Markdown</button>
+  </nav>
+
+  <div class="panel" id="panel-findings">
+    <div class="filters">
+      <label><input type="checkbox" class="sev" value="error" checked> Errors</label>
+      <label><input type="checkbox" class="sev" value="warning" checked> Warnings</label>
+      <label><input type="checkbox" class="sev" value="info" checked> Information</label>
+      <input type="search" id="finding-search" placeholder="Search a code, entity, trip or stop id">
+    </div>
+    <div id="findings-list"></div>
+  </div>
+
+  <div class="panel" id="panel-inspector" hidden>
+    <div class="filters">
+      <label>Entity <select id="entity-select"></select></label>
+      <label>Trip <select id="trip-select"></select></label>
+    </div>
+    <div id="inspector-body"></div>
+  </div>
+
+  <div class="panel" id="panel-map" hidden>
+    <p class="fine map-legend">
+      <span class="key grey"></span> scheduled shape
+      <span class="key blue"></span> new shape
+      <span class="key dot-kept"></span> kept
+      <span class="key dot-removed"></span> removed
+      <span class="key dot-inserted"></span> inserted
+    </p>
+    <div id="map"></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="wrap fine">
+  <p>
+    Open source, no backend, no telemetry.
+    <a href="https://gtfs.org/documentation/realtime/feed-entities/trip-modifications/">TripModifications in the GTFS spec</a> ·
+    <a href="https://github.com/TransitApp/tripmodifications-validator">Source on GitHub</a>
+  </p>
+</footer>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
