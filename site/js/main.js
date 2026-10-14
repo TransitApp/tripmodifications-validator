@@ -188,12 +188,16 @@ async function run() {
     showProgress('Loading gtfs-realtime.proto', 0.02);
     await loadProto();
 
-    // The buffer is transferred to the worker, so keep a note of what it was.
+    // The buffer is transferred to the worker and unusable afterwards, so the
+    // parsed feed is kept on the entry and reused when validating again.
     const staticEntry = state.files.static;
-    showProgress('Unzipping the static GTFS', 0.05);
-    const raw = await parseStatic(staticEntry.buffer);
-    staticEntry.buffer = null;
-    const gtfs = new Gtfs(raw);
+    if (!staticEntry.gtfs) {
+      showProgress('Unzipping the static GTFS', 0.05);
+      const raw = await parseStatic(staticEntry.buffer);
+      staticEntry.buffer = null;
+      staticEntry.gtfs = new Gtfs(raw);
+    }
+    const gtfs = staticEntry.gtfs;
     state.gtfs = gtfs;
 
     showProgress('Decoding the TripModifications feed', 0.85);
