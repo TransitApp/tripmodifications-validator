@@ -196,6 +196,7 @@ async function run() {
       const raw = await parseStatic(staticEntry.buffer);
       staticEntry.buffer = null;
       staticEntry.gtfs = new Gtfs(raw);
+      staticEntry.warnings = raw.warnings;
     }
     const gtfs = staticEntry.gtfs;
     state.gtfs = gtfs;
@@ -220,8 +221,9 @@ async function run() {
     hideProgress();
     const seconds = ((performance.now() - t0) / 1000).toFixed(1);
     const parts = [`Validated in ${seconds}s.`];
-    if (raw.warnings.length) parts.push(...raw.warnings);
-    banner(parts.join('\n'), raw.warnings.length ? 'warn' : 'good');
+    const warnings = staticEntry.warnings;
+    if (warnings.length) parts.push(...warnings);
+    banner(parts.join('\n'), warnings.length ? 'warn' : 'good');
     render();
   } catch (e) {
     hideProgress();
